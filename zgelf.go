@@ -12,11 +12,12 @@ import (
     "strings"
     "sync"
     "time"
-    "unicode"
 )
 
+type TransportMode string
+
 const (
-    tempLogFileRegex       = "^log_([[:digit:]]+).gz$"
+    tempLogFileRegex       = "^log_([[:digit:]]+).[gz|log]$"
     defaultBufferSize      = 1024 * 1024     // default buffer size  (flush if size exceeds 1MB)
     defaultBufferTime      = time.Minute * 5 // default buffer time (flush every 5 minutes)
     GelfVersion            = "1.1"
@@ -32,37 +33,48 @@ const (
     VersionFieldName       = "version"
     LineNumberFieldName    = "_line"
     NotAllowedIdFieldName  = "_id"
+    TransportHttp          = TransportMode("http")
+    TransportTcp           = TransportMode("tcp")
+    TransportUdp           = TransportMode("udp")
 )
 
 var ErrorKeyNotAllowed = errors.New("key `id` is not allowed")
 
 type GelfWriter struct {
-    TempLogPath string
-
-    bufferSize int
-    bufferTime time.Duration
-    serverUrl  string
-    serverPort uint16
-    host       string
-    queue      chan map[string]interface{}
-    wg         sync.WaitGroup
-    mu         sync.RWMutex
-    buffer     *bytes.Buffer
-    ticker     *time.Ticker
+    tempLogPath string
+    bufferSize  int
+    bufferTime  time.Duration
+    serverUrl   string
+    serverPort  uint16
+    mode        TransportMode
+    host        string
+    queue       chan map[string]interface{}
+    wg          sync.WaitGroup
+    mu          sync.RWMutex
+    buffer      *bytes.Buffer
+    ticker      *time.Ticker
 }
 
 func (w *GelfWriter) isEmpty() bool {
     return w.buffer.Len() == 0
 }
 
-func NewGelfWriter(host, url string, port uint16) GelfWriter {
+// New crates a new GelfWriter which can be used as a sink
+// for zerolog. The parameter `host` is set as the appropriate field
+// in the GELF-package, the server ist configured with tha parameters
+// `serverUrl` and `serverPort` and mode. Transport over http(s) is the default.
+func New(host, serverUrl string, serverPort uint16, mode TransportMode, tmpLogPath string) GelfWriter {
 
+    if mode == "" {
+        mode = TransportHttp
+    }
     w := GelfWriter{
-        TempLogPath: "",
+        tempLogPath: tmpLogPath,
         bufferSize:  defaultBufferSize,
         bufferTime:  defaultBufferTime,
-        serverUrl:   url,
-        serverPort:  port,
+        serverUrl:   serverUrl,
+        serverPort:  serverPort,
+        mode:        mode,
         host:        host,
         buffer:      new(bytes.Buffer),
         ticker:      time.NewTicker(defaultBufferTime),
@@ -95,7 +107,7 @@ func (w GelfWriter) Write(p []byte) (n int, err error) {
         return len(p), nil
     }
     l := len(w.queue)
-    if l > 0 && l % 50 == 0 {
+    if l > 0 && l%50 == 0 {
         fmt.Printf("###queue: %d\n", l)
     }
 
@@ -138,13 +150,22 @@ func (w *GelfWriter) Flush() {
     err := w.sendLog(w.buffer)
     if err != nil {
         _, _ = fmt.Fprintf(os.Stderr, "error sending log: %s", err)
-        if w.TempLogPath != "" {
+        if w.tempLogPath != "" {
             w.writeTemporaryLog(w.buffer)
         }
     } else {
         w.sendTemporaryLogs()
     }
 
+}
+
+// SetMaxBufferTime sets the time after the log-buffer is flushed,
+// regardless of its size.
+func (w *GelfWriter) SetMaxBufferTime(bufferTime time.Duration) {
+    if w.ticker != nil {
+        w.ticker.Stop()
+    }
+    w.ticker = time.NewTicker(bufferTime)
 }
 
 func (w *GelfWriter) worker() {
@@ -160,24 +181,23 @@ func (w *GelfWriter) worker() {
 
 func (w *GelfWriter) process(evt map[string]interface{}) {
 
-
     evn := make(map[string]interface{}, len(evt))
     for k, v := range evt {
         switch k {
         case zerolog.LevelFieldName:
-            lvl := parseLevel(v.(string))
+            lvl := parseLogLevel(v.(string))
             if lvl < 0 {
                 return
             }
             evn[LevelFieldName] = lvl
             evn[OriginalLevelFieldName] = v
         case zerolog.TimestampFieldName:
-            t, err := convertTime(v.(json.Number))
+            t, err := convertTime(v.(json.Number), zerolog.TimeFieldFormat)
             if err == nil {
                 evn[TimestampFieldName] = t
             }
         case zerolog.MessageFieldName:
-                evn[ShortMessageFieldName] = v
+            evn[ShortMessageFieldName] = v
         case zerolog.CallerFieldName:
             if f, l, err := parseCaller(v.(string)); err == nil {
                 evn[FileFieldName] = f
@@ -205,13 +225,6 @@ func (w *GelfWriter) process(evt map[string]interface{}) {
     fmt.Printf("time: %f\n", evn[TimestampFieldName])
 
     w.bufferEvent(evn)
-}
-
-func (w *GelfWriter) SetMaxBufferTime(bufferTime time.Duration) {
-    if w.ticker != nil {
-        w.ticker.Stop()
-    }
-    w.ticker = time.NewTicker(bufferTime)
 }
 
 func (w *GelfWriter) bufferEvent(evt map[string]interface{}) {
@@ -277,84 +290,5 @@ func parseCaller(caller string) (file string, line int, err error) {
     return "", 0, fmt.Errorf("cannot parse caller: %s", caller)
 }
 
-func formatKey(k string) (string, error) {
 
-    var key strings.Builder
-    key.Grow(len(k))
-    for i, c := range k {
-        if i == 0 && c != '_' {
-            key.WriteRune('_')
-        }
-        if unicode.IsLetter(c) || unicode.IsNumber(c) ||
-            c == '_' || c == '-' || c == '.' {
-            if unicode.IsUpper(c) {
-                if i > 0 {
-                    key.WriteRune('_')
-                }
-                key.WriteRune(unicode.ToLower(c))
-            } else {
-                key.WriteRune(c)
-            }
-        }
-    }
 
-    if key.Len() == 0 {
-        return "", fmt.Errorf("cannot convert to valid key: %s", k)
-    }
-
-    if key.String() == NotAllowedIdFieldName {
-        return "", ErrorKeyNotAllowed
-    }
-    return key.String(), nil
-}
-
-func convertTime(i json.Number) (float64, error) {
-    if zerolog.TimeFieldFormat == zerolog.TimeFormatUnix {
-        return i.Float64()
-    } else if zerolog.TimeFieldFormat == zerolog.TimeFormatUnixMs {
-        if f, err := i.Float64(); err != nil {
-            return 0, err
-        } else {
-            return f / 1000.0, nil
-        }
-    } else if zerolog.TimeFieldFormat == zerolog.TimeFormatUnixMicro {
-        if f, err := i.Int64(); err != nil {
-            return 0, err
-        } else {
-            return float64(f / 1000) / 1000.0, nil
-        }
-    }
-    return 0, fmt.Errorf("unknown timeformat")
-}
-
-// parseLevel converts the zeroLog-level to a syslog level
-//   0    Emergency
-//   1    Alert
-//   2    Critical
-//   3    Error
-//   4    Warning
-//   5    Notice
-//   6    Informational
-//   7    Debug
-func parseLevel(level string) int {
-    lvl, err := zerolog.ParseLevel(level)
-    if err != nil {
-        return -1
-    }
-    switch lvl {
-    case zerolog.DebugLevel:
-        return 7
-    case zerolog.InfoLevel:
-        return 6
-    case zerolog.WarnLevel:
-        return 4
-    case zerolog.ErrorLevel:
-        return 3
-    case zerolog.FatalLevel:
-        return 2
-    case zerolog.PanicLevel:
-        return 1
-    default:
-        return -1
-    }
-}
