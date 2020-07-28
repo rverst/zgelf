@@ -14,22 +14,20 @@ import (
 )
 
 const (
-	tempLogFileRegex       = "^log_([[:digit:]]+).[gz|log]$"
-	defaultBufferSize      = 1024 * 64        // default buffer size (flush if size exceeds 60kB)
-	defaultBufferTime      = time.Second * 30 // default buffer time (flush every 30 seconds)
-	GelfVersion            = "1.1"
-	ErrorFieldName         = "_err"
-	ErrorStackFieldName    = "_err_stack"
-	HostFieldName          = "host"
-	FileFieldName          = "_file"
-	FullMessageFieldName   = "full_message"
-	LevelFieldName         = "level"
-	OriginalLevelFieldName = "_o_level"
-	TimestampFieldName     = "timestamp"
-	ShortMessageFieldName  = "short_message"
-	VersionFieldName       = "version"
-	LineNumberFieldName    = "_line"
-	NotAllowedIdFieldName  = "_id"
+	tempLogFileRegex      = "^log_([[:digit:]]+).[gz|log]$"
+	GelfVersion           = "1.1"
+	ErrorFieldName        = "_err"
+	ErrorStackFieldName   = "_err_stack"
+	HostFieldName         = "host"
+	FileFieldName         = "_file"
+	FullMessageFieldName  = "full_message"
+	LevelFieldName        = "level"
+	LogLevelFieldName     = "_log_level"
+	TimestampFieldName    = "timestamp"
+	ShortMessageFieldName = "short_message"
+	VersionFieldName      = "version"
+	LineNumberFieldName   = "_line"
+	NotAllowedIdFieldName = "_id"
 )
 
 var ErrorKeyNotAllowed = errors.New("key `id` is not allowed")
@@ -39,7 +37,8 @@ type GelfWriter struct {
 	tempLogPath string
 	host        string
 	queue       chan map[string]interface{}
-	wg          sync.WaitGroup
+	wgProcess   sync.WaitGroup
+	wgFlush     sync.WaitGroup
 	mu          sync.RWMutex
 	buffer      *logBuffer
 	ticker      *time.Ticker
@@ -49,27 +48,28 @@ type GelfWriter struct {
 // for zerolog. The parameter `host` is set as the appropriate field
 // in the GELF-package, the server ist configured with tha parameters
 // `serverUrl` and `serverPort` and mode. Transport over http(s) is the default.
-func New(host, tmpLogPath string, trans transport) GelfWriter {
+func New(host, tmpLogPath string, trans transport) *GelfWriter {
 	w := GelfWriter{
 		transport:   trans,
 		tempLogPath: tmpLogPath,
 		host:        host,
 		buffer:      NewLogBuffer(),
-		ticker:      time.NewTicker(defaultBufferTime),
 		queue:       make(chan map[string]interface{}, 500),
 	}
 
-	go func() {
-		for range w.ticker.C {
-			w.Flush(true)
-		}
-	}()
-
+	if trans.BufferTime() > 0 {
+		w.ticker = time.NewTicker(trans.BufferTime())
+		go func() {
+			for range w.ticker.C {
+				w.Flush(true)
+			}
+		}()
+	}
 	go w.worker()
-	return w
+	return &w
 }
 
-func (w GelfWriter) Write(p []byte) (n int, err error) {
+func (w *GelfWriter) Write(p []byte) (n int, err error) {
 
 	var evt map[string]interface{}
 	d := json.NewDecoder(bytes.NewReader(p))
@@ -105,18 +105,19 @@ func (w *GelfWriter) Close() {
 	close(w.queue)
 
 	// wait for process routines to finish
-	w.wg.Wait()
+	w.wgProcess.Wait()
 
 	// flush buffer
 	w.Flush(true)
-	if !(w.buffer.Size() > 0) {
-		fmt.Println("BUFFER NOT EMPTY")
-	}
 }
 
 // Flush flushes the send buffer
 func (w *GelfWriter) Flush(block bool) {
 
+	if block {
+		w.wgProcess.Wait()
+		w.wgFlush.Wait() // wait for running, non blocking operations
+	}
 	if w.buffer.Size() == 0 {
 		return
 	}
@@ -131,6 +132,9 @@ func (w *GelfWriter) Flush(block bool) {
 		_ = w.sendBuffer(c)
 	} else {
 		go func() {
+			w.wgFlush.Add(1)
+			defer w.wgFlush.Done()
+
 			if err := w.sendBuffer(c); err == nil {
 				w.sendTemporaryLogs()
 			}
@@ -150,9 +154,9 @@ func (w *GelfWriter) SetMaxBufferTime(bufferTime time.Duration) {
 func (w *GelfWriter) worker() {
 
 	for data := range w.queue {
-		w.wg.Add(1)
+		w.wgProcess.Add(1)
 		go func(evt map[string]interface{}) {
-			defer w.wg.Done()
+			defer w.wgProcess.Done()
 			w.process(evt)
 		}(data)
 	}
@@ -169,7 +173,7 @@ func (w *GelfWriter) process(evt map[string]interface{}) {
 				return
 			}
 			evn[LevelFieldName] = lvl
-			evn[OriginalLevelFieldName] = v
+			evn[LogLevelFieldName] = v
 		case zerolog.TimestampFieldName:
 			t, err := convertTime(v.(json.Number), zerolog.TimeFieldFormat)
 			if err == nil {
@@ -201,15 +205,10 @@ func (w *GelfWriter) process(evt map[string]interface{}) {
 	evn[VersionFieldName] = GelfVersion
 	evn[HostFieldName] = w.host
 
-	fmt.Printf("time: %f\n", evn[TimestampFieldName])
-
 	w.bufferEvent(evn)
 }
 
 func (w *GelfWriter) bufferEvent(evt map[string]interface{}) {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-
 	d, err := json.Marshal(evt)
 	if err != nil {
 		fmt.Printf("error marshalling GELF data: %s", err)
@@ -227,7 +226,6 @@ func (w *GelfWriter) isBufferSizeExceeded() bool {
 }
 
 func (w *GelfWriter) sendBuffer(buffer *logBuffer) error {
-
 	err := w.transport.SendBuffer(buffer)
 	if err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "error sending log: %s", err)
@@ -236,22 +234,6 @@ func (w *GelfWriter) sendBuffer(buffer *logBuffer) error {
 		}
 	}
 	return err
-	//_, _ = fmt.Fprintf(os.Stderr, "error sending log: %s", err)
-	//addr, err := net.ResolveTCPAddr("tcp", fmt.Sprintf("%s:%d", w.serverUrl, w.serverPort))
-	//if err != nil {
-	//    return fmt.Errorf("cannot resolve address: %s", err)
-	//}
-	//
-	//conn, err := net.DialTCP("tcp", nil, addr)
-	//if err != nil {
-	//    return fmt.Errorf("error dialing: %s", err)
-	//}
-	//_, err = conn.Write(buffer.Bytes())
-	//if err != nil {
-	//    return fmt.Errorf("write to server failed: %s", err)
-	//}
-	//buffer.Reset()
-	//return nil
 }
 
 func (w *GelfWriter) writeTemporaryLog(buffer *logBuffer) {
@@ -264,10 +246,10 @@ func (w *GelfWriter) sendTemporaryLogs() {
 
 func parseCaller(caller string) (file string, line int, err error) {
 
-	split := strings.Split(caller, ":")
-	if len(split) == 2 {
-		line, err := strconv.Atoi(split[1])
-		return split[0], line, err
+	i := strings.LastIndex(caller, ":")
+	if i < 0 {
+		return "", 0, fmt.Errorf("cannot parse caller: %s", caller)
 	}
-	return "", 0, fmt.Errorf("cannot parse caller: %s", caller)
+	line, err = strconv.Atoi(caller[i+1:])
+	return caller[:i], line, err
 }

@@ -24,6 +24,8 @@ func main() {
 
 	multi := zerolog.MultiLevelWriter(consoleWriter, gWriter)
 
-	log.Logger = zerolog.New(multi) //.With().Caller().Timestamp().Str("source", "example.org").Logger()
+	log.Logger = zerolog.New(multi).With().Caller().Timestamp().Str("source", "example.org").Logger()
 	log.Info().Msg("Hello World")
+
+	log.Debug().Msg("Hello debug")
 }

@@ -34,7 +34,8 @@ func Test_logBuffer_Add(t *testing.T) {
 		expectedSize int
 		expectedData []byte
 	}{
-		{"add to empty buffer", NewLogBuffer(), []byte(`{ "x": "Hello World" }`), 22, []byte(`{ "x": "Hello World" }`)},
+		{"add to empty buffer", NewLogBuffer(), []byte(`{ "x": "Hello World" }`),
+			22, []byte(`{ "x": "Hello World" }`)},
 	}
 
 	for _, tt := range tests {
@@ -42,7 +43,8 @@ func Test_logBuffer_Add(t *testing.T) {
 			tt.buffer.Add(tt.data)
 
 			if tt.buffer.size != tt.expectedSize {
-				t.Errorf("buffer.size error, want %d got: %d", tt.expectedSize, tt.buffer.size)
+				t.Errorf("buffer.size error, want %d got: %d",
+					tt.expectedSize, tt.buffer.size)
 			}
 
 		})
