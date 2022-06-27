@@ -5,12 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/rs/zerolog"
 	"os"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/rs/zerolog"
 )
 
 const (
@@ -39,7 +40,6 @@ type GelfWriter struct {
 	queue       chan map[string]interface{}
 	wgProcess   sync.WaitGroup
 	wgFlush     sync.WaitGroup
-	mu          sync.RWMutex
 	buffer      *logBuffer
 	ticker      *time.Ticker
 }
@@ -70,7 +70,6 @@ func New(host, tmpLogPath string, trans transport) *GelfWriter {
 }
 
 func (w *GelfWriter) Write(p []byte) (n int, err error) {
-
 	var evt map[string]interface{}
 	d := json.NewDecoder(bytes.NewReader(p))
 	d.UseNumber()
@@ -113,7 +112,6 @@ func (w *GelfWriter) Close() {
 
 // Flush flushes the send buffer
 func (w *GelfWriter) Flush(block bool) {
-
 	if block {
 		w.wgProcess.Wait()
 		w.wgFlush.Wait() // wait for running, non blocking operations
@@ -121,9 +119,6 @@ func (w *GelfWriter) Flush(block bool) {
 	if w.buffer.Size() == 0 {
 		return
 	}
-
-	w.mu.Lock()
-	defer w.mu.Unlock()
 
 	c := w.buffer.Copy()
 	w.buffer.Clear()
@@ -152,7 +147,6 @@ func (w *GelfWriter) SetMaxBufferTime(bufferTime time.Duration) {
 }
 
 func (w *GelfWriter) worker() {
-
 	for data := range w.queue {
 		w.wgProcess.Add(1)
 		go func(evt map[string]interface{}) {
@@ -163,7 +157,6 @@ func (w *GelfWriter) worker() {
 }
 
 func (w *GelfWriter) process(evt map[string]interface{}) {
-
 	evn := make(map[string]interface{}, len(evt))
 	for k, v := range evt {
 		switch k {
@@ -245,7 +238,6 @@ func (w *GelfWriter) sendTemporaryLogs() {
 }
 
 func parseCaller(caller string) (file string, line int, err error) {
-
 	i := strings.LastIndex(caller, ":")
 	if i < 0 {
 		return "", 0, fmt.Errorf("cannot parse caller: %s", caller)

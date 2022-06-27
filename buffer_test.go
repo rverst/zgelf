@@ -13,8 +13,6 @@ func TestNewLogBuffer(t *testing.T) {
 		{"create new logBuffer", &logBuffer{
 			buffers:   make([][]byte, 0),
 			size:      0,
-			compress:  false,
-			delimiter: make([]byte, 0),
 		}},
 	}
 	for _, tt := range tests {
@@ -57,9 +55,7 @@ func Test_logBuffer_Clear(t *testing.T) {
 	b2 := NewLogBuffer()
 
 	b1.Add([]byte(`{ "x":"Hello World" }`))
-	b1.compress = true
 	b2.Add([]byte(`{ "x":"Hello World" }`))
-	b2.SetDelimiter([]byte{'\n'})
 
 	tests := []struct {
 		name   string
@@ -74,14 +70,8 @@ func Test_logBuffer_Clear(t *testing.T) {
 			if tt.buffer.size > 0 {
 				t.Errorf("buffer.size error, want 0 got: %d", tt.buffer.size)
 			}
-			if tt.buffer.compress {
-				t.Errorf("buffer.compress error, want false got: %t", tt.buffer.compress)
-			}
 			if len(tt.buffer.buffers) > 0 {
 				t.Errorf("buffer.buffers not empty, got: %v", tt.buffer.buffers)
-			}
-			if len(tt.buffer.delimiter) > 0 {
-				t.Errorf("buffer.delimiter not empty, got: %v", tt.buffer.delimiter)
 			}
 		})
 	}
