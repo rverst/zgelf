@@ -1,5 +1,5 @@
 module github.com/rverst/zgelf
 
-go 1.14
+go 1.19
 
-require github.com/rs/zerolog v1.19.0
+require github.com/rs/zerolog v1.27.0
