@@ -35,7 +35,7 @@ func (b *logBuffer) Clear() {
 }
 
 func (b *logBuffer) Copy() *logBuffer {
-	b.mu.RLock()
+	b.mu.Lock()
 	defer b.mu.Unlock()
 
 	c := make([][]byte, len(b.buffers))

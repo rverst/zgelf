@@ -11,15 +11,15 @@ const chunkSize = 1420
 const chunkHeader = 12
 const maxDataSize = chunkSize - chunkHeader // the maximum datagram size per chunk, should be less than the MTU
 
-type udpTransport struct {
+type UdpTransport struct {
 	serverAddr *net.UDPAddr
 	localAddr  *net.UDPAddr
 	compress   bool
 }
 
-func NewUdpTransport(url string, port uint16) (*udpTransport, error) {
+func NewUdpTransport(conn string) (*UdpTransport, error) {
 
-	srvAddr, err := net.ResolveUDPAddr("udp", fmt.Sprintf("%s:%d", url, port))
+	srvAddr, err := net.ResolveUDPAddr("udp", conn)
 	if err != nil {
 		return nil, err
 	}
@@ -29,28 +29,28 @@ func NewUdpTransport(url string, port uint16) (*udpTransport, error) {
 		return nil, err
 	}
 
-	t := udpTransport{
+	t := UdpTransport{
 		serverAddr: srvAddr,
 		localAddr:  locAddr,
 	}
 	return &t, nil
 }
 
-func (t *udpTransport) Mode() TransportMode {
+func (t *UdpTransport) Mode() TransportMode {
 	return TransportUdp
 }
 
-func (t *udpTransport) BufferSize() int {
+func (t *UdpTransport) BufferSize() int {
 	// we do not buffer in udp mode, but since we are processing the
 	// log packages, we still use the asynchronous handling
 	return -1
 }
 
-func (t *udpTransport) BufferTime() time.Duration {
+func (t *UdpTransport) BufferTime() time.Duration {
 	return 0
 }
 
-func (t *udpTransport) SendBuffer(buffer *logBuffer) error {
+func (t *UdpTransport) SendBuffer(buffer *logBuffer) error {
 	conn, err := net.DialUDP("udp", t.localAddr, t.serverAddr)
 	if err != nil {
 		return err
@@ -93,7 +93,7 @@ func (t *udpTransport) SendBuffer(buffer *logBuffer) error {
 					continue
 				}
 				if _, err := conn.Write(cData); err != nil {
-					fmt.Printf("error sending chunk %v",err)
+					fmt.Printf("error sending chunk %v", err)
 				}
 			}
 		}
